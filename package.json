@@ -1,0 +1,27 @@
+{
+  "name": "book-portfolio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only BookPortfolio wealth dashboard backed by BookFinance API v1.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/**/*.test.ts"
+  },
+  "dependencies": {
+    "next": "16.3.2",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.2",
+    "typescript": "^5"
+  }
+}
