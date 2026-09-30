@@ -71,7 +71,8 @@ an actual FX snapshot source.
 
 ## Local development
 
-Requirements: Node.js 20+ and a running Solo Empire API.
+Requirements: Node.js 22.6+ (tests use `--experimental-strip-types`) and a
+running Solo Empire API.
 
 ```bash
 cp .env.example .env.local
@@ -92,10 +93,20 @@ Open `http://localhost:3000`. The API must be available at
 ## Verification
 
 ```bash
+npm run lint
 npm test
 npm run typecheck
 npm run build
 ```
+
+`bash scripts/check.sh` runs the same sequence. GitHub Actions runs it on every
+push and pull request; none of the checks contact the Finance API.
+
+Money totals (portfolio value, cost basis, gain/loss, open invoices,
+reconciliation differences) are summed in integer minor units via `sumMoney`,
+so float drift cannot leak into displayed totals. Headline figures are shown in
+whole currency units; reconciliation differences use the currency's full
+minor-unit precision so a small mismatch is never displayed as zero.
 
 `npm run build` produces a production Next.js artifact. Deployment still needs
 an approved gateway/TLS setup, managed secret injection, and a real concurrent
@@ -103,7 +114,5 @@ load test before production promotion.
 
 ## Boundary status
 
-This is a local application boundary created under the Solo Empire Book Dev
-mount. It has not been pushed to a remote repository or deployed. Register a
-remote in `repository-catalog/registries/projects.yaml` only after a remote
-repository is intentionally created.
+This is an application boundary created under the Solo Empire Book Dev mount,
+hosted at `github.com/bookchaowalit/book-portfolio`. It has not been deployed.
