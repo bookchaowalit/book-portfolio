@@ -437,7 +437,7 @@ export default async function Home({ searchParams }: HomeProps) {
                           <td><span className="tag">{item.category || "ทั่วไป"}</span></td>
                           <td>{formatDate(item.transaction_date)}</td>
                           <td className={`align-right amount ${item.transaction_type === "income" ? "amount-positive" : ""}`}>
-                            {item.transaction_type === "income" ? "+" : "−"}{formatMoney(item.amount, item.currency)}
+                            {item.transaction_type === "income" ? "+" : "−"}{formatMoney(Math.abs(item.amount), item.currency)}
                           </td>
                         </tr>
                       ))}

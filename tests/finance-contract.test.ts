@@ -9,6 +9,7 @@ import {
   formatMoney,
   isReportingPeriod,
   loadFinanceDashboard,
+  matchesShape,
   resolveReportingPeriod,
   statusLabel,
   sumMoney,
@@ -824,4 +825,66 @@ test("reconciliation differences sum exactly across open and exception rows", ()
 
   assert.equal(signals.unresolvedDifference, 0.3);
   assert.match(formatMoney(signals.unresolvedDifference, signals.currency, { precise: true }), /0\.30/);
+});
+
+test("payload shape checks accept nullable fields and reject drift", () => {
+  const shape = { id: "number", name: "string", note: "string?" } as const;
+  assert.equal(matchesShape({ id: 1, name: "a", note: null }, shape), true);
+  assert.equal(matchesShape({ id: 1, name: "a", extra: true }, shape), true);
+  assert.equal(matchesShape({ id: "1", name: "a" }, shape), false);
+  assert.equal(matchesShape({ id: Number.NaN, name: "a" }, shape), false);
+  assert.equal(matchesShape([], shape), false);
+  assert.equal(matchesShape(null, shape), false);
+});
+
+test("a malformed endpoint payload fails closed for that endpoint only", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalToken = process.env.FINANCE_API_TOKEN;
+  const originalBaseUrl = process.env.FINANCE_API_BASE_URL;
+  let summaryInvoices: unknown = [];
+
+  process.env.FINANCE_API_TOKEN = "test-token";
+  process.env.FINANCE_API_BASE_URL = "http://finance.test";
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    const base = { schema_version: FINANCE_SCHEMA_VERSION, service: "book-finance-api", source_of_truth: "sqlite" };
+    let body: unknown;
+    if (url.includes("/summary?")) {
+      body = { ...base, period: "2026-08", transactions: [], revenue: [], invoices: summaryInvoices, accounts: { active: 0 }, liabilities: [] };
+    } else if (url.includes("/risk-readiness")) {
+      body = { ...base, status: "maybe", currency: "THB", total_positions: 0, eligible_positions: 0, coverage_ratio: 0, metric_definitions_status: "x", fx_contract_status: "y", reason_codes: [] };
+    } else if (url.includes("/transactions?")) {
+      body = { ...base, items: [{ id: 1, transaction_type: "income", amount: "100.00", currency: "THB", transaction_date: "2026-08-01" }], limit: 8, offset: 0, next_cursor: null };
+    } else if (url.includes("/accounts?")) {
+      body = { ...base, items: { not: "an array" }, limit: 8, offset: 0, next_cursor: null };
+    } else {
+      body = { ...base, items: [], limit: 12, offset: 0, next_cursor: null };
+    }
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  try {
+    const dashboard = await loadFinanceDashboard("2026-08");
+    assert.equal(dashboard.ok, true);
+    if (dashboard.ok) {
+      for (const endpoint of ["transactions", "accounts", "riskReadiness"] as const) {
+        assert.equal(dashboard.endpointStatuses[endpoint].status, "error", endpoint);
+        assert.match(dashboard.endpointStatuses[endpoint].error || "", /contract/);
+      }
+      assert.deepEqual(dashboard.transactions, []);
+      assert.equal(dashboard.riskReadiness, null);
+      assert.equal(dashboard.endpointStatuses.invoices.status, "ok");
+    }
+
+    summaryInvoices = [{ status: "paid", currency: "THB", count: 1, amount: null }];
+    const broken = await loadFinanceDashboard("2026-08");
+    assert.equal(broken.ok, false);
+    if (!broken.ok) assert.match(broken.error, /contract/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env.FINANCE_API_TOKEN;
+    else process.env.FINANCE_API_TOKEN = originalToken;
+    if (originalBaseUrl === undefined) delete process.env.FINANCE_API_BASE_URL;
+    else process.env.FINANCE_API_BASE_URL = originalBaseUrl;
+  }
 });

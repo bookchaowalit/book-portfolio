@@ -2,9 +2,10 @@
 
 ## Current state
 
-Score: 7/10 (was 6/10) — solid fail-closed API client with good contract
-tests; now linted and in CI, with minor-unit money sums. Still no component or
-page-level tests and amounts arrive from the API as JSON floats.
+Score: 7.5/10 (was 7/10 after pass 1, 6/10 before) — fail-closed API client
+that now validates every payload's shape per endpoint; linted and in CI with
+minor-unit sums. Still no page-level render tests and amounts arrive from the
+API as JSON floats.
 
 ## Backlog
 
@@ -15,18 +16,16 @@ page-level tests and amounts arrive from the API as JSON floats.
 - Ask the Finance API to expose amounts as decimal strings or integer minor
   units; parse them into minor units at the boundary instead of trusting
   `number` (floats) in `src/lib/finance.ts` types.
-- Add render tests for `app/page.tsx` panels (partial-failure, unpriced
-  holdings, empty states) with mocked `loadFinanceDashboard` data.
-- Runtime-validate API payload shapes (currently cast with `as T`), e.g. items
-  arrays and numeric fields, so a contract drift fails closed per endpoint.
+- Add render tests for `app/page.tsx` panels (needs a TSX-capable runner such
+  as Vitest + React Testing Library; `node --experimental-strip-types` cannot
+  load `.tsx`): partial-failure, unpriced holdings and empty states with
+  mocked `loadFinanceDashboard` data.
 
 ### P2
-- The transactions table prints "+"/"−" before `formatMoney`; a negative API
-  amount would render a double sign. Normalize sign handling.
 - Add a skip link and visible `:focus-visible` styles in `globals.css`.
 - `npm audit` reports advisories; review and patch within the pinned majors.
 
-## Done in this pass
+## Done in pass 1
 - Money totals now use `sumMoney` (integer minor units); fixed float drift in
   portfolio value, cost basis, gain/loss, allocations, open invoices, and
   reconciliation differences.
@@ -36,3 +35,13 @@ page-level tests and amounts arrive from the API as JSON floats.
 - Added GitHub Actions CI (lint, test, typecheck, build) and `engines.node`.
 - Accessibility: decorative glyphs hidden from assistive tech.
 - README: corrected Node requirement (22.6+) and stale "not pushed" status.
+
+## Done in this pass (pass 2)
+- Every endpoint payload is shape-checked at the boundary (`matchesShape`,
+  `assertFinanceSummary`, `assertFinanceRiskReadiness`, per-row shapes for the
+  paged lists) instead of trusted via `as T`. Drift (string amounts, non-array
+  `items`, unknown readiness status, non-finite numbers) marks only that
+  endpoint as failed with a Thai "contract" message; a malformed summary fails
+  the dashboard closed. Nullable fields and extra fields remain accepted.
+- Transactions table no longer shows a double sign for a negative amount.
+- Tests: shape-check unit test and a per-endpoint fail-closed dashboard test.

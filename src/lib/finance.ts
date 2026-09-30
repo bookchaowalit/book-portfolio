@@ -279,11 +279,118 @@ export function resolveReportingPeriod(value?: string): string {
   return requested && isReportingPeriod(requested) ? requested : configuredPeriod();
 }
 
+/**
+ * Field kinds checked at the API boundary. `?` means the field may also be
+ * null or missing. Numbers must be finite. Extra fields are allowed so the API
+ * can add data without breaking this reader.
+ */
+type FieldKind = "string" | "number" | "boolean" | "string?" | "number?";
+type Shape = Record<string, FieldKind>;
+
+const INVALID_PAYLOAD = "Finance API returned an invalid payload shape";
+
+function matchesKind(value: unknown, kind: FieldKind): boolean {
+  if (kind.endsWith("?") && (value === null || value === undefined)) return true;
+  const base = kind.replace("?", "");
+  if (base === "number") return typeof value === "number" && Number.isFinite(value);
+  return typeof value === base;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** True when `value` is an object whose listed fields have the expected kinds. */
+export function matchesShape(value: unknown, shape: Shape): boolean {
+  return isRecord(value) && Object.entries(shape).every(([field, kind]) => matchesKind(value[field], kind));
+}
+
+function assertRows(rows: unknown, shape: Shape): void {
+  if (!Array.isArray(rows) || !rows.every((row) => matchesShape(row, shape))) throw new Error(INVALID_PAYLOAD);
+}
+
+const TRANSACTION_SHAPE: Shape = {
+  id: "number",
+  transaction_type: "string",
+  amount: "number",
+  currency: "string",
+  transaction_date: "string",
+  description: "string?",
+  category: "string?",
+  merchant: "string?",
+};
+const ACCOUNT_SHAPE: Shape = { id: "number", name: "string", account_type: "string?", currency: "string", status: "string" };
+const INVESTMENT_SHAPE: Shape = {
+  id: "number",
+  name: "string",
+  investment_type: "string",
+  quantity: "number?",
+  cost_basis: "number?",
+  current_value: "number?",
+  currency: "string",
+  status: "string",
+};
+const RECONCILIATION_SHAPE: Shape = {
+  id: "number",
+  period_start: "string",
+  period_end: "string",
+  source_type: "string",
+  difference_amount: "number?",
+  currency: "string",
+  status: "string",
+};
+const VALUATION_SHAPE: Shape = {
+  id: "number",
+  investment_id: "number",
+  market_value: "number?",
+  currency: "string",
+  valuation_as_of: "string",
+  coverage_status: "string",
+  market_price_quality: "string?",
+};
+const INVOICE_SHAPE: Shape = {
+  id: "number",
+  invoice_no: "string?",
+  amount: "number",
+  currency: "string",
+  issue_date: "string",
+  due_date: "string?",
+  status: "string",
+};
+
+/** Throw unless the summary has every section the dashboard aggregates. */
+export function assertFinanceSummary(payload: unknown): asserts payload is FinanceSummary {
+  if (!isRecord(payload) || !matchesShape(payload.accounts, { active: "number" })) throw new Error(INVALID_PAYLOAD);
+  assertRows(payload.transactions, { currency: "string", count: "number", income: "number", expense: "number", net: "number" });
+  assertRows(payload.revenue, { currency: "string", count: "number", total: "number", received: "number", pending: "number" });
+  assertRows(payload.invoices, { status: "string", currency: "string", count: "number", amount: "number" });
+  assertRows(payload.liabilities, { currency: "string", count: "number", outstanding: "number" });
+}
+
+/** Throw unless the risk-readiness payload has the fields the dashboard renders. */
+export function assertFinanceRiskReadiness(payload: unknown): asserts payload is FinanceRiskReadiness {
+  const valid =
+    matchesShape(payload, {
+      status: "string",
+      currency: "string",
+      total_positions: "number",
+      eligible_positions: "number",
+      coverage_ratio: "number",
+      metric_definitions_status: "string",
+      fx_contract_status: "string",
+    }) &&
+    isRecord(payload) &&
+    (payload.status === "ready" || payload.status === "blocked") &&
+    Array.isArray(payload.reason_codes) &&
+    payload.reason_codes.every((code) => typeof code === "string");
+  if (!valid) throw new Error(INVALID_PAYLOAD);
+}
+
 function apiBaseUrl(): string {
   return (process.env.FINANCE_API_BASE_URL || "http://127.0.0.1:3001").replace(/\/$/, "");
 }
 
-async function fetchFinanceEndpoint<T>(path: string): Promise<ApiResult<T>> {
+async function fetchFinanceEndpoint<T>(path: string, validate?: (payload: unknown) => void): Promise<ApiResult<T>> {
   const token = process.env.FINANCE_API_TOKEN?.trim();
   if (!token) throw new Error("FINANCE_API_TOKEN is not configured");
 
@@ -302,6 +409,8 @@ async function fetchFinanceEndpoint<T>(path: string): Promise<ApiResult<T>> {
     throw new Error("BookFinance API returned an unsupported schema");
   }
 
+  validate?.(payload);
+
   const requestId = response.headers.get("X-Request-ID");
   return { data: payload as T, requestIds: requestId ? [requestId] : [] };
 }
@@ -315,13 +424,20 @@ function pagedPath(path: string, limit: number, offset: number): string {
   return `${path}${separator}${query.toString()}`;
 }
 
-async function fetchAllFinancePages<T>(path: string, limit: number): Promise<ApiResult<T[]>> {
+async function fetchFinancePage<T>(path: string, shape: Shape): Promise<ApiResult<PagedFinanceResponse<T>>> {
+  return fetchFinanceEndpoint<PagedFinanceResponse<T>>(path, (payload) => {
+    if (!isRecord(payload)) throw new Error(INVALID_PAYLOAD);
+    assertRows(payload.items, shape);
+  });
+}
+
+async function fetchAllFinancePages<T>(path: string, limit: number, shape: Shape): Promise<ApiResult<T[]>> {
   const items: T[] = [];
   const requestIds: string[] = [];
   let offset = 0;
 
   for (let page = 0; page < MAX_FINANCE_PAGES; page += 1) {
-    const result = await fetchFinanceEndpoint<PagedFinanceResponse<T>>(pagedPath(path, limit, offset));
+    const result = await fetchFinancePage<T>(pagedPath(path, limit, offset), shape);
     const response = result.data;
     requestIds.push(...result.requestIds);
 
@@ -355,14 +471,14 @@ export async function loadFinanceDashboard(requestedPeriod?: string): Promise<Fi
   const period = resolveReportingPeriod(requestedPeriod);
 
   const [summaryResult, transactionsResult, accountsResult, investmentsResult, reconciliationsResult, valuationsResult, riskReadinessResult, invoicesResult] = await Promise.allSettled([
-    fetchFinanceEndpoint<FinanceSummary>(`/api/finance/v1/summary?period=${period}`),
-    fetchFinanceEndpoint<PagedFinanceResponse<FinanceTransaction>>("/api/finance/v1/transactions?limit=8"),
-    fetchFinanceEndpoint<PagedFinanceResponse<FinanceAccount>>("/api/finance/v1/accounts?status=active&limit=8"),
-    fetchAllFinancePages<FinanceInvestment>("/api/finance/v1/investments?status=active", FINANCE_PORTFOLIO_PAGE_SIZE),
-    fetchFinanceEndpoint<PagedFinanceResponse<FinanceReconciliation>>("/api/finance/v1/reconciliations?limit=8"),
-    fetchAllFinancePages<FinanceValuation>("/api/finance/v1/valuations?status=active&latest=true", FINANCE_PORTFOLIO_PAGE_SIZE),
-    fetchFinanceEndpoint<FinanceRiskReadiness>("/api/finance/v1/risk-readiness"),
-    fetchFinanceEndpoint<PagedFinanceResponse<FinanceInvoice>>("/api/finance/v1/invoices?limit=6"),
+    fetchFinanceEndpoint<FinanceSummary>(`/api/finance/v1/summary?period=${period}`, assertFinanceSummary),
+    fetchFinancePage<FinanceTransaction>("/api/finance/v1/transactions?limit=8", TRANSACTION_SHAPE),
+    fetchFinancePage<FinanceAccount>("/api/finance/v1/accounts?status=active&limit=8", ACCOUNT_SHAPE),
+    fetchAllFinancePages<FinanceInvestment>("/api/finance/v1/investments?status=active", FINANCE_PORTFOLIO_PAGE_SIZE, INVESTMENT_SHAPE),
+    fetchFinancePage<FinanceReconciliation>("/api/finance/v1/reconciliations?limit=8", RECONCILIATION_SHAPE),
+    fetchAllFinancePages<FinanceValuation>("/api/finance/v1/valuations?status=active&latest=true", FINANCE_PORTFOLIO_PAGE_SIZE, VALUATION_SHAPE),
+    fetchFinanceEndpoint<FinanceRiskReadiness>("/api/finance/v1/risk-readiness", assertFinanceRiskReadiness),
+    fetchFinancePage<FinanceInvoice>("/api/finance/v1/invoices?limit=6", INVOICE_SHAPE),
   ]);
 
   const endpointStatuses: FinanceEndpointStatusMap = {
@@ -408,6 +524,9 @@ function dashboardErrorMessage(error: unknown): string {
   }
   if (error instanceof Error && error.message.includes("unsupported schema")) {
     return "Finance API ส่ง schema ที่ frontend เวอร์ชันนี้ยังไม่รองรับ";
+  }
+  if (error instanceof Error && error.message === INVALID_PAYLOAD) {
+    return "Finance API ส่งข้อมูลที่รูปแบบไม่ตรงกับ contract จึงไม่แสดงส่วนนี้";
   }
   if (error instanceof Error && error.message.includes("pagination")) {
     return "Finance API ส่งข้อมูลหน้าไม่ครบหรือ cursor ผิดรูปแบบ";
