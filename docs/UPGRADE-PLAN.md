@@ -20,7 +20,7 @@ arrive from the API as JSON floats.
   (`ready` vs `blocked`) and multi-currency portfolio panels.
 
 ### P2
-- `npm audit` reports advisories; review and patch within the pinned majors.
+- Keep `next`/`eslint-config-next` on the latest 16.3.x patch; re-run `npm audit --omit=dev` each pass.
 
 ## Done in pass 1
 - Money totals now use `sumMoney` (integer minor units); fixed float drift in
@@ -57,3 +57,8 @@ arrive from the API as JSON floats.
   small dev dependency; lockfile written with npm 11 so `libc` fields stay).
 - Accessibility: skip link to a focusable `main#main` on every route and a
   visible `:focus-visible` ring.
+- Security: `next` and `eslint-config-next` 16.3.2 -> 16.3.8 (fixes
+  GHSA-p293-qw3h-jr36, GHSA-2xp9-vwfh-vxw4 and GHSA-vcvr-r3jv-pc5j; the
+  refreshed lockfile also clears sharp GHSA-rgj7-g3m4-5g8c). Lockfile
+  regenerated with npm 11 (`libc` fields kept); `npm audit --omit=dev`
+  reports 0 vulnerabilities.
