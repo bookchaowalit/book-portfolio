@@ -2,10 +2,10 @@
 
 ## Current state
 
-Score: 7.5/10 (was 7/10 after pass 1, 6/10 before) — fail-closed API client
-that now validates every payload's shape per endpoint; linted and in CI with
-minor-unit sums. Still no page-level render tests and amounts arrive from the
-API as JSON floats.
+Score: 8/10 (7.5 after pass 2, 7 after pass 1, 6 before) — fail-closed API
+client that validates every payload's shape per endpoint, minor-unit sums,
+page-level render tests and keyboard focus support, all in CI. Amounts still
+arrive from the API as JSON floats.
 
 ## Backlog
 
@@ -16,13 +16,10 @@ API as JSON floats.
 - Ask the Finance API to expose amounts as decimal strings or integer minor
   units; parse them into minor units at the boundary instead of trusting
   `number` (floats) in `src/lib/finance.ts` types.
-- Add render tests for `app/page.tsx` panels (needs a TSX-capable runner such
-  as Vitest + React Testing Library; `node --experimental-strip-types` cannot
-  load `.tsx`): partial-failure, unpriced holdings and empty states with
-  mocked `loadFinanceDashboard` data.
+- Extend `tests/page.test.tsx` to the reconciliation queue, risk readiness
+  (`ready` vs `blocked`) and multi-currency portfolio panels.
 
 ### P2
-- Add a skip link and visible `:focus-visible` styles in `globals.css`.
 - `npm audit` reports advisories; review and patch within the pinned majors.
 
 ## Done in pass 1
@@ -45,3 +42,13 @@ API as JSON floats.
   the dashboard closed. Nullable fields and extra fields remain accepted.
 - Transactions table no longer shows a double sign for a negative amount.
 - Tests: shape-check unit test and a per-endpoint fail-closed dashboard test.
+
+## Done in this pass (pass 3)
+- Page-level render tests (`tests/page.test.tsx`): the async `Home` server
+  component is awaited and rendered with `react-dom/server` against a stubbed
+  API; covers the setup state, explicit empty states, a partial failure that
+  must not look like zero data (checked to fail when the accounts error branch
+  is removed), and unpriced holdings. `npm test` now runs through `tsx` (one
+  small dev dependency; lockfile written with npm 11 so `libc` fields stay).
+- Accessibility: skip link to a focusable `main#main` on every route and a
+  visible `:focus-visible` ring.

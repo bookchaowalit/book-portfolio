@@ -71,7 +71,7 @@ an actual FX snapshot source.
 
 ## Local development
 
-Requirements: Node.js 22.6+ (tests use `--experimental-strip-types`) and a
+Requirements: Node.js 22.6+ and a
 running Solo Empire API.
 
 ```bash
@@ -101,6 +101,12 @@ npm run build
 
 `bash scripts/check.sh` runs the same sequence. GitHub Actions runs it on every
 push and pull request; none of the checks contact the Finance API.
+
+`npm test` runs `node --test` through `tsx`, so it covers both the API client
+(`tests/finance-contract.test.ts`) and page-level render tests
+(`tests/page.test.tsx`): the async page is awaited and rendered to static HTML
+with a stubbed API to check the setup, empty, partial-failure and unpriced
+holdings states.
 
 Money totals (portfolio value, cost basis, gain/loss, open invoices,
 reconciliation differences) are summed in integer minor units via `sumMoney`,
