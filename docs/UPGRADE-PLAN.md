@@ -44,6 +44,11 @@ arrive from the API as JSON floats.
 - Tests: shape-check unit test and a per-endpoint fail-closed dashboard test.
 
 ## Done in this pass (pass 3)
+- Latest valuation per position uses one rule everywhere
+  (`isNewerValuation`): `valuation_as_of` compared as instants (a `+07:00`
+  stamp no longer beats a later `Z` stamp by text order), ties to the higher
+  id. Valuation coverage used first-seen on ties and text order, so it could
+  disagree with the positions table. Test in `finance-contract.test.ts`.
 - Page-level render tests (`tests/page.test.tsx`): the async `Home` server
   component is awaited and rendered with `react-dom/server` against a stubbed
   API; covers the setup state, explicit empty states, a partial failure that

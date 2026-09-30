@@ -637,16 +637,29 @@ export function summarizeFinanceSignals(summary: FinanceSummary): FinanceControl
   };
 }
 
+/**
+ * Whether `candidate` supersedes `previous` for the same position: a later
+ * `valuation_as_of` instant wins (compared as instants, so `...Z` and
+ * `...+07:00` stamps order correctly), and a tie goes to the higher id, the
+ * later correction. Every "latest valuation" view must use this one rule.
+ */
+function isNewerValuation(candidate: FinanceValuation, previous: FinanceValuation): boolean {
+  const candidateMs = Date.parse(candidate.valuation_as_of);
+  const previousMs = Date.parse(previous.valuation_as_of);
+  if (!Number.isNaN(candidateMs) && !Number.isNaN(previousMs)) {
+    if (candidateMs !== previousMs) return candidateMs > previousMs;
+  } else if (candidate.valuation_as_of !== previous.valuation_as_of) {
+    return candidate.valuation_as_of > previous.valuation_as_of;
+  }
+  return candidate.id > previous.id;
+}
+
 function latestValuationsByInvestment(valuations: FinanceValuation[]): Map<string, FinanceValuation> {
   const latest = new Map<string, FinanceValuation>();
   for (const valuation of valuations) {
     const key = `${valuation.investment_id}:${valuation.currency}`;
     const previous = latest.get(key);
-    if (
-      !previous ||
-      valuation.valuation_as_of > previous.valuation_as_of ||
-      (valuation.valuation_as_of === previous.valuation_as_of && valuation.id > previous.id)
-    ) {
+    if (!previous || isNewerValuation(valuation, previous)) {
       latest.set(key, valuation);
     }
   }
@@ -742,7 +755,7 @@ export function summarizeFinanceValuationCoverage(rows: FinanceValuation[], curr
 
   for (const row of selected) {
     const previous = latestByInvestment.get(row.investment_id);
-    if (!previous || row.valuation_as_of > previous.valuation_as_of) latestByInvestment.set(row.investment_id, row);
+    if (!previous || isNewerValuation(row, previous)) latestByInvestment.set(row.investment_id, row);
   }
 
   const latest = [...latestByInvestment.values()];
@@ -753,10 +766,10 @@ export function summarizeFinanceValuationCoverage(rows: FinanceValuation[], curr
     verifiedPositions: latest.filter((row) => row.market_price_quality === "verified").length,
     stalePositions: latest.filter((row) => row.coverage_status === "stale" || row.market_price_quality === "stale").length,
     unpricedPositions: latest.filter((row) => row.coverage_status === "unpriced" || row.market_value === null).length,
-    latestAsOf: latest.reduce<string | null>(
-      (latestValue, row) => (!latestValue || row.valuation_as_of > latestValue ? row.valuation_as_of : latestValue),
+    latestAsOf: latest.reduce<FinanceValuation | null>(
+      (newest, row) => (!newest || isNewerValuation(row, newest) ? row : newest),
       null,
-    ),
+    )?.valuation_as_of ?? null,
   };
 }
 

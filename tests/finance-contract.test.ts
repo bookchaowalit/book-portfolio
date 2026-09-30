@@ -888,3 +888,39 @@ test("a malformed endpoint payload fails closed for that endpoint only", async (
     else process.env.FINANCE_API_BASE_URL = originalBaseUrl;
   }
 });
+
+test("valuation coverage and positions agree on the latest snapshot", () => {
+  const base = {
+    investment_name: "Fund",
+    market_price_snapshot_id: 1,
+    quantity: 10,
+    currency: "THB",
+    valuation_method: "market_price",
+    market_price: 60,
+    market_price_currency: "THB",
+    market_price_as_of: "2026-08-31T16:00:00Z",
+    market_price_source_type: "broker",
+  };
+  // Same as_of: the later correction (higher id) wins, whatever the API order.
+  const correction = { ...base, id: 7, investment_id: 10, market_value: 650, valuation_as_of: "2026-08-31T16:00:00Z", coverage_status: "covered", market_price_quality: "verified" };
+  const original = { ...base, id: 3, investment_id: 10, market_value: null, valuation_as_of: "2026-08-31T16:00:00Z", coverage_status: "unpriced", market_price_quality: null };
+  // 22:00+07:00 is 15:00Z, earlier than 16:00Z although it sorts higher as text.
+  const offsetEarlier = { ...base, id: 2, investment_id: 11, market_value: null, valuation_as_of: "2026-08-31T22:00:00+07:00", coverage_status: "stale", market_price_quality: "stale" };
+  const utcLater = { ...base, id: 1, investment_id: 11, market_value: 100, valuation_as_of: "2026-08-31T16:00:00Z", coverage_status: "covered", market_price_quality: "verified" };
+  const rows = [original, correction, utcLater, offsetEarlier] as Parameters<typeof summarizeFinanceValuationCoverage>[0];
+
+  const coverage = summarizeFinanceValuationCoverage(rows);
+  assert.equal(coverage.coveredPositions, 2);
+  assert.equal(coverage.unpricedPositions, 0);
+  assert.equal(coverage.stalePositions, 0);
+  assert.equal(coverage.latestAsOf, "2026-08-31T16:00:00Z");
+
+  const positions = buildFinancePortfolioPositions(
+    [
+      { id: 10, name: "Fund", investment_type: "fund", status: "active", currency: "THB", quantity: 10, cost_basis: 500, current_value: null },
+      { id: 11, name: "Stock", investment_type: "stock", status: "active", currency: "THB", quantity: 1, cost_basis: 90, current_value: null },
+    ] as Parameters<typeof buildFinancePortfolioPositions>[0],
+    rows,
+  );
+  assert.deepEqual(positions.map((item) => item.currentValue), [650, 100]);
+});
