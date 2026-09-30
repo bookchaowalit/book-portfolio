@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   FINANCE_SCHEMA_VERSION,
   buildFinancePortfolioPositions,
+  currencyScale,
   formatDate,
   formatDateTime,
   formatMoney,
@@ -10,6 +11,7 @@ import {
   loadFinanceDashboard,
   resolveReportingPeriod,
   statusLabel,
+  sumMoney,
   summarizeFinancePortfolio,
   summarizeFinanceReconciliations,
   summarizeFinanceSignals,
@@ -750,4 +752,76 @@ test("dashboard exposes a partial endpoint failure without presenting it as empt
     if (originalBaseUrl === undefined) delete process.env.FINANCE_API_BASE_URL;
     else process.env.FINANCE_API_BASE_URL = originalBaseUrl;
   }
+});
+
+test("money formatting never shows a negative zero", () => {
+  assert.doesNotMatch(formatMoney(-0.3, "THB"), /-|−/);
+  assert.doesNotMatch(formatMoney(-2.2e-14, "THB"), /-|−/);
+  assert.equal(formatMoney(-0.3, "THB"), formatMoney(0, "THB"));
+  assert.match(formatMoney(-1, "THB"), /-|−/);
+});
+
+test("precise money formatting keeps the currency minor unit", () => {
+  assert.match(formatMoney(0.3, "THB", { precise: true }), /0\.30/);
+  assert.match(formatMoney(-1234.5, "THB", { precise: true }), /1,234\.50/);
+  assert.doesNotMatch(formatMoney(1500, "JPY", { precise: true }), /\./);
+  assert.equal(currencyScale("THB"), 2);
+  assert.equal(currencyScale("JPY"), 0);
+});
+
+test("money totals are summed in minor units without float drift", () => {
+  assert.equal(0.1 + 0.2 === 0.3, false);
+  assert.equal(sumMoney([0.1, 0.2], "THB"), 0.3);
+  assert.equal(sumMoney([1000.1, -1000, -0.1], "THB"), 0);
+  assert.equal(sumMoney([null, undefined, 19.99, 0.01], "THB"), 20);
+  assert.equal(sumMoney([100.4, 100.4], "JPY"), 200);
+});
+
+test("portfolio totals and gain/loss are exact to the minor unit", () => {
+  const investment = (id: number, cost: number, value: number) => ({
+    id,
+    name: `Holding ${id}`,
+    investment_type: "fund",
+    owner_scope: "personal",
+    account_id: null,
+    quantity: 1,
+    cost_basis: cost,
+    current_value: value,
+    currency: "THB",
+    acquired_on: null,
+    status: "active",
+  });
+  const snapshot = summarizeFinancePortfolio([
+    investment(1, 0.1, 0.1),
+    investment(2, 0.2, 0.2),
+  ]);
+
+  assert.equal(snapshot.costBasis, 0.3);
+  assert.equal(snapshot.currentValue, 0.3);
+  assert.equal(snapshot.unrealizedGainLoss, 0);
+  assert.deepEqual(snapshot.allocations, [{ investmentType: "fund", count: 2, currentValue: 0.3 }]);
+});
+
+test("reconciliation differences sum exactly across open and exception rows", () => {
+  const row = (id: number, status: string, difference: number) => ({
+    id,
+    account_id: null,
+    period_start: "2026-08-01",
+    period_end: "2026-08-31",
+    source_type: "bank",
+    expected_amount: null,
+    reconciled_amount: null,
+    difference_amount: difference,
+    currency: "THB",
+    status,
+    reconciled_at: null,
+  });
+  const signals = summarizeFinanceReconciliations([
+    row(1, "open", 0.1),
+    row(2, "exception", 0.2),
+    row(3, "matched", 99),
+  ]);
+
+  assert.equal(signals.unresolvedDifference, 0.3);
+  assert.match(formatMoney(signals.unresolvedDifference, signals.currency, { precise: true }), /0\.30/);
 });

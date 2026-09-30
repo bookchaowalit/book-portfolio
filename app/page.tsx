@@ -129,14 +129,14 @@ export default async function Home({ searchParams }: HomeProps) {
     <main className="shell">
       <header className="topbar">
         <div className="brand-lockup">
-          <span className="brand-mark">BP</span>
+          <span className="brand-mark" aria-hidden="true">BP</span>
           <div>
             <p className="eyebrow">PRIVATE WEALTH DESK</p>
             <p className="brand-name">BookPortfolio</p>
           </div>
         </div>
         <div className={`connection-pill ${dashboard.ok ? "is-online" : "is-offline"}`}>
-          <span className="status-dot" />
+          <span className="status-dot" aria-hidden="true" />
           {dashboard.ok ? "API CONNECTED" : "API CONFIG NEEDED"}
         </div>
       </header>
@@ -166,7 +166,7 @@ export default async function Home({ searchParams }: HomeProps) {
 
       {!dashboard.ok ? (
         <section className="setup-card" aria-live="polite">
-          <div className="setup-icon">↗</div>
+          <div className="setup-icon" aria-hidden="true">↗</div>
           <div>
             <p className="eyebrow accent">LOCAL SETUP</p>
             <h2>Frontend พร้อมแล้ว แต่ยังไม่ได้เชื่อม Finance API</h2>
@@ -179,7 +179,7 @@ export default async function Home({ searchParams }: HomeProps) {
         <>
           {failedEndpoints.length ? (
             <section className="setup-card" aria-live="polite">
-              <div className="setup-icon">!</div>
+              <div className="setup-icon" aria-hidden="true">!</div>
               <div>
                 <p className="eyebrow accent">PARTIAL DATA</p>
                 <h2>Finance โหลดได้บางส่วน</h2>
@@ -341,7 +341,7 @@ export default async function Home({ searchParams }: HomeProps) {
             </section>
           ) : dashboard.ok && !portfolioReady ? (
             <section className="setup-card" aria-live="polite">
-              <div className="setup-icon">!</div>
+              <div className="setup-icon" aria-hidden="true">!</div>
               <div>
                 <p className="eyebrow accent">PORTFOLIO UNAVAILABLE</p>
                 <h2>ยังคำนวณ Portfolio ไม่ได้</h2>
@@ -360,7 +360,7 @@ export default async function Home({ searchParams }: HomeProps) {
                 <div className="risk-stat-grid">
                   <div className="risk-stat risk-stat-dark">
                     <span>ส่วนต่างที่ยังเปิด</span>
-                    <strong>{formatMoney(reconciliationSignals.unresolvedDifference, reconciliationSignals.currency)}</strong>
+                    <strong>{formatMoney(reconciliationSignals.unresolvedDifference, reconciliationSignals.currency, { precise: true })}</strong>
                     <small>{reconciliationSignals.openCount + reconciliationSignals.exceptionCount} รายการ open / exception</small>
                   </div>
                   <div className="risk-stat risk-stat-warm">
@@ -404,7 +404,7 @@ export default async function Home({ searchParams }: HomeProps) {
                           <small>{formatDate(item.period_start)} – {formatDate(item.period_end)} · {reconciliationStatusLabel(item.status)}</small>
                         </div>
                         <strong className={item.status === "exception" ? "risk-value-alert" : ""}>
-                          {item.difference_amount === null ? "—" : formatMoney(item.difference_amount, item.currency)}
+                          {item.difference_amount === null ? "—" : formatMoney(item.difference_amount, item.currency, { precise: true })}
                         </strong>
                       </div>
                     )) : <div className="empty-state">ยังไม่มี reconciliation ใน {reconciliationSignals.currency}</div>}

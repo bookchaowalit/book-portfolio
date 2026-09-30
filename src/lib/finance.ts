@@ -418,16 +418,47 @@ function dashboardErrorMessage(error: unknown): string {
   return "ยังไม่สามารถโหลดข้อมูลจาก Finance API ได้ กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่";
 }
 
-export function formatMoney(value: number, currency: string): string {
-  const amount = Number(value) || 0;
+/** Minor-unit digits for an ISO 4217 currency (THB/USD 2, JPY 0). */
+export function currencyScale(currency: string): number {
+  try {
+    return new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2;
+  } catch {
+    return 2;
+  }
+}
+
+/**
+ * Sum API amounts in integer minor units so totals do not accumulate binary
+ * floating-point drift (0.1 + 0.2 !== 0.3). Each value is rounded to the
+ * currency's minor unit before it is added.
+ */
+export function sumMoney(values: Iterable<number | null | undefined>, currency: string): number {
+  const factor = 10 ** currencyScale(currency || "THB");
+  let minorUnits = 0;
+  for (const value of values) minorUnits += Math.round((Number(value) || 0) * factor);
+  return minorUnits / factor;
+}
+
+export type FormatMoneyOptions = {
+  /** Show the currency's full minor-unit precision instead of whole units. */
+  precise?: boolean;
+};
+
+export function formatMoney(value: number, currency: string, options: FormatMoneyOptions = {}): string {
+  const code = currency || "THB";
+  const digits = options.precise ? currencyScale(code) : 0;
+  const raw = Number(value) || 0;
+  // Values that round to zero at the displayed precision must not render as "-฿0".
+  const amount = Math.abs(raw) < 0.5 / 10 ** digits ? 0 : raw;
   try {
     return new Intl.NumberFormat("th-TH", {
       style: "currency",
-      currency: currency || "THB",
-      maximumFractionDigits: 0,
+      currency: code,
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
     }).format(amount);
   } catch {
-    return `${currency || "THB"} ${amount.toLocaleString("th-TH", { maximumFractionDigits: 0 })}`;
+    return `${code} ${amount.toLocaleString("th-TH", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
   }
 }
 
@@ -482,7 +513,7 @@ export function summarizeFinanceSignals(summary: FinanceSummary): FinanceControl
     revenuePending: Number(revenue?.pending) || 0,
     liabilityOutstanding: Number(liabilities?.outstanding) || 0,
     liabilityCount: Number(liabilities?.count) || 0,
-    openInvoiceAmount: openInvoices.reduce((total, row) => total + (Number(row.amount) || 0), 0),
+    openInvoiceAmount: sumMoney(openInvoices.map((row) => row.amount), currency),
     openInvoiceCount: openInvoices.reduce((total, row) => total + (Number(row.count) || 0), 0),
   };
 }
@@ -545,12 +576,12 @@ export function summarizeFinancePortfolio(
   const complete = positions.length > 0 && positions.every(
     (item) => item.currentValue !== null && item.costBasis !== null,
   );
-  const allocations = new Map<string, { count: number; currentValue: number }>();
+  const allocations = new Map<string, { count: number; values: Array<number | null> }>();
 
   for (const item of positions) {
-    const current = allocations.get(item.investmentType) || { count: 0, currentValue: 0 };
+    const current = allocations.get(item.investmentType) || { count: 0, values: [] };
     current.count += 1;
-    current.currentValue += Number(item.currentValue) || 0;
+    current.values.push(item.currentValue);
     allocations.set(item.investmentType, current);
   }
 
@@ -559,13 +590,13 @@ export function summarizeFinancePortfolio(
     activePositions: positions.length,
     pricedPositions: priced.length,
     unpricedPositions: positions.length - priced.length,
-    costBasis: positions.reduce((total, item) => total + (Number(item.costBasis) || 0), 0),
-    currentValue: priced.reduce((total, item) => total + (Number(item.currentValue) || 0), 0),
+    costBasis: sumMoney(positions.map((item) => item.costBasis), currency),
+    currentValue: sumMoney(priced.map((item) => item.currentValue), currency),
     unrealizedGainLoss: complete
-      ? positions.reduce((total, item) => total + (Number(item.currentValue) || 0) - (Number(item.costBasis) || 0), 0)
+      ? sumMoney(positions.flatMap((item) => [item.currentValue, -(Number(item.costBasis) || 0)]), currency)
       : null,
     allocations: [...allocations.entries()]
-      .map(([investmentType, values]) => ({ investmentType, ...values }))
+      .map(([investmentType, { count, values }]) => ({ investmentType, count, currentValue: sumMoney(values, currency) }))
       .sort((left, right) => right.currentValue - left.currentValue),
   };
 }
@@ -581,10 +612,7 @@ export function summarizeFinanceReconciliations(rows: FinanceReconciliation[]): 
     openCount: open.length,
     exceptionCount: exceptions.length,
     matchedCount: selected.filter((row) => row.status.toLowerCase() === "matched").length,
-    unresolvedDifference: [...open, ...exceptions].reduce(
-      (total, row) => total + (Number(row.difference_amount) || 0),
-      0,
-    ),
+    unresolvedDifference: sumMoney([...open, ...exceptions].map((row) => row.difference_amount), currency),
   };
 }
 
