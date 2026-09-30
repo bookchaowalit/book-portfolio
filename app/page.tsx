@@ -126,7 +126,7 @@ export default async function Home({ searchParams }: HomeProps) {
     : [];
 
   return (
-    <main className="shell">
+    <main id="main" tabIndex={-1} className="shell">
       <header className="topbar">
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true">BP</span>

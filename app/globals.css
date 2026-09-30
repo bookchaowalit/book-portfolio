@@ -14,6 +14,13 @@
 
 * { box-sizing: border-box; }
 
+/* Keyboard focus: a visible ring on every interactive element (mouse clicks keep the default). */
+:focus-visible { outline: 3px solid var(--green-dark); outline-offset: 2px; }
+main:focus-visible { outline: none; }
+
+.skip-link { position: absolute; left: 12px; top: -48px; z-index: 10; padding: 8px 12px; border-radius: 8px; background: var(--ink); color: #fff; font-weight: 600; text-decoration: none; }
+.skip-link:focus { top: 12px; }
+
 html { background: var(--paper); }
 
 body {

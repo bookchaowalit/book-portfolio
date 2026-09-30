@@ -2,7 +2,7 @@
 
 export default function Error({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (
-    <main className="shell error-shell">
+    <main id="main" tabIndex={-1} className="shell error-shell">
       <section className="error-state" role="alert">
         <p className="eyebrow accent">FINANCE CONTROL PLANE</p>
         <h1>โหลดหน้า Finance Command Center ไม่สำเร็จ</h1>
