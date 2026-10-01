@@ -3,13 +3,16 @@ import test from "node:test";
 import {
   FINANCE_SCHEMA_VERSION,
   buildFinancePortfolioPositions,
+  currencyScale,
   formatDate,
   formatDateTime,
   formatMoney,
   isReportingPeriod,
   loadFinanceDashboard,
+  matchesShape,
   resolveReportingPeriod,
   statusLabel,
+  sumMoney,
   summarizeFinancePortfolio,
   summarizeFinanceReconciliations,
   summarizeFinanceSignals,
@@ -750,4 +753,174 @@ test("dashboard exposes a partial endpoint failure without presenting it as empt
     if (originalBaseUrl === undefined) delete process.env.FINANCE_API_BASE_URL;
     else process.env.FINANCE_API_BASE_URL = originalBaseUrl;
   }
+});
+
+test("money formatting never shows a negative zero", () => {
+  assert.doesNotMatch(formatMoney(-0.3, "THB"), /-|−/);
+  assert.doesNotMatch(formatMoney(-2.2e-14, "THB"), /-|−/);
+  assert.equal(formatMoney(-0.3, "THB"), formatMoney(0, "THB"));
+  assert.match(formatMoney(-1, "THB"), /-|−/);
+});
+
+test("precise money formatting keeps the currency minor unit", () => {
+  assert.match(formatMoney(0.3, "THB", { precise: true }), /0\.30/);
+  assert.match(formatMoney(-1234.5, "THB", { precise: true }), /1,234\.50/);
+  assert.doesNotMatch(formatMoney(1500, "JPY", { precise: true }), /\./);
+  assert.equal(currencyScale("THB"), 2);
+  assert.equal(currencyScale("JPY"), 0);
+});
+
+test("money totals are summed in minor units without float drift", () => {
+  assert.equal(0.1 + 0.2 === 0.3, false);
+  assert.equal(sumMoney([0.1, 0.2], "THB"), 0.3);
+  assert.equal(sumMoney([1000.1, -1000, -0.1], "THB"), 0);
+  assert.equal(sumMoney([null, undefined, 19.99, 0.01], "THB"), 20);
+  assert.equal(sumMoney([100.4, 100.4], "JPY"), 200);
+});
+
+test("portfolio totals and gain/loss are exact to the minor unit", () => {
+  const investment = (id: number, cost: number, value: number) => ({
+    id,
+    name: `Holding ${id}`,
+    investment_type: "fund",
+    owner_scope: "personal",
+    account_id: null,
+    quantity: 1,
+    cost_basis: cost,
+    current_value: value,
+    currency: "THB",
+    acquired_on: null,
+    status: "active",
+  });
+  const snapshot = summarizeFinancePortfolio([
+    investment(1, 0.1, 0.1),
+    investment(2, 0.2, 0.2),
+  ]);
+
+  assert.equal(snapshot.costBasis, 0.3);
+  assert.equal(snapshot.currentValue, 0.3);
+  assert.equal(snapshot.unrealizedGainLoss, 0);
+  assert.deepEqual(snapshot.allocations, [{ investmentType: "fund", count: 2, currentValue: 0.3 }]);
+});
+
+test("reconciliation differences sum exactly across open and exception rows", () => {
+  const row = (id: number, status: string, difference: number) => ({
+    id,
+    account_id: null,
+    period_start: "2026-08-01",
+    period_end: "2026-08-31",
+    source_type: "bank",
+    expected_amount: null,
+    reconciled_amount: null,
+    difference_amount: difference,
+    currency: "THB",
+    status,
+    reconciled_at: null,
+  });
+  const signals = summarizeFinanceReconciliations([
+    row(1, "open", 0.1),
+    row(2, "exception", 0.2),
+    row(3, "matched", 99),
+  ]);
+
+  assert.equal(signals.unresolvedDifference, 0.3);
+  assert.match(formatMoney(signals.unresolvedDifference, signals.currency, { precise: true }), /0\.30/);
+});
+
+test("payload shape checks accept nullable fields and reject drift", () => {
+  const shape = { id: "number", name: "string", note: "string?" } as const;
+  assert.equal(matchesShape({ id: 1, name: "a", note: null }, shape), true);
+  assert.equal(matchesShape({ id: 1, name: "a", extra: true }, shape), true);
+  assert.equal(matchesShape({ id: "1", name: "a" }, shape), false);
+  assert.equal(matchesShape({ id: Number.NaN, name: "a" }, shape), false);
+  assert.equal(matchesShape([], shape), false);
+  assert.equal(matchesShape(null, shape), false);
+});
+
+test("a malformed endpoint payload fails closed for that endpoint only", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalToken = process.env.FINANCE_API_TOKEN;
+  const originalBaseUrl = process.env.FINANCE_API_BASE_URL;
+  let summaryInvoices: unknown = [];
+
+  process.env.FINANCE_API_TOKEN = "test-token";
+  process.env.FINANCE_API_BASE_URL = "http://finance.test";
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    const base = { schema_version: FINANCE_SCHEMA_VERSION, service: "book-finance-api", source_of_truth: "sqlite" };
+    let body: unknown;
+    if (url.includes("/summary?")) {
+      body = { ...base, period: "2026-08", transactions: [], revenue: [], invoices: summaryInvoices, accounts: { active: 0 }, liabilities: [] };
+    } else if (url.includes("/risk-readiness")) {
+      body = { ...base, status: "maybe", currency: "THB", total_positions: 0, eligible_positions: 0, coverage_ratio: 0, metric_definitions_status: "x", fx_contract_status: "y", reason_codes: [] };
+    } else if (url.includes("/transactions?")) {
+      body = { ...base, items: [{ id: 1, transaction_type: "income", amount: "100.00", currency: "THB", transaction_date: "2026-08-01" }], limit: 8, offset: 0, next_cursor: null };
+    } else if (url.includes("/accounts?")) {
+      body = { ...base, items: { not: "an array" }, limit: 8, offset: 0, next_cursor: null };
+    } else {
+      body = { ...base, items: [], limit: 12, offset: 0, next_cursor: null };
+    }
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  try {
+    const dashboard = await loadFinanceDashboard("2026-08");
+    assert.equal(dashboard.ok, true);
+    if (dashboard.ok) {
+      for (const endpoint of ["transactions", "accounts", "riskReadiness"] as const) {
+        assert.equal(dashboard.endpointStatuses[endpoint].status, "error", endpoint);
+        assert.match(dashboard.endpointStatuses[endpoint].error || "", /contract/);
+      }
+      assert.deepEqual(dashboard.transactions, []);
+      assert.equal(dashboard.riskReadiness, null);
+      assert.equal(dashboard.endpointStatuses.invoices.status, "ok");
+    }
+
+    summaryInvoices = [{ status: "paid", currency: "THB", count: 1, amount: null }];
+    const broken = await loadFinanceDashboard("2026-08");
+    assert.equal(broken.ok, false);
+    if (!broken.ok) assert.match(broken.error, /contract/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env.FINANCE_API_TOKEN;
+    else process.env.FINANCE_API_TOKEN = originalToken;
+    if (originalBaseUrl === undefined) delete process.env.FINANCE_API_BASE_URL;
+    else process.env.FINANCE_API_BASE_URL = originalBaseUrl;
+  }
+});
+
+test("valuation coverage and positions agree on the latest snapshot", () => {
+  const base = {
+    investment_name: "Fund",
+    market_price_snapshot_id: 1,
+    quantity: 10,
+    currency: "THB",
+    valuation_method: "market_price",
+    market_price: 60,
+    market_price_currency: "THB",
+    market_price_as_of: "2026-08-31T16:00:00Z",
+    market_price_source_type: "broker",
+  };
+  // Same as_of: the later correction (higher id) wins, whatever the API order.
+  const correction = { ...base, id: 7, investment_id: 10, market_value: 650, valuation_as_of: "2026-08-31T16:00:00Z", coverage_status: "covered", market_price_quality: "verified" };
+  const original = { ...base, id: 3, investment_id: 10, market_value: null, valuation_as_of: "2026-08-31T16:00:00Z", coverage_status: "unpriced", market_price_quality: null };
+  // 22:00+07:00 is 15:00Z, earlier than 16:00Z although it sorts higher as text.
+  const offsetEarlier = { ...base, id: 2, investment_id: 11, market_value: null, valuation_as_of: "2026-08-31T22:00:00+07:00", coverage_status: "stale", market_price_quality: "stale" };
+  const utcLater = { ...base, id: 1, investment_id: 11, market_value: 100, valuation_as_of: "2026-08-31T16:00:00Z", coverage_status: "covered", market_price_quality: "verified" };
+  const rows = [original, correction, utcLater, offsetEarlier] as Parameters<typeof summarizeFinanceValuationCoverage>[0];
+
+  const coverage = summarizeFinanceValuationCoverage(rows);
+  assert.equal(coverage.coveredPositions, 2);
+  assert.equal(coverage.unpricedPositions, 0);
+  assert.equal(coverage.stalePositions, 0);
+  assert.equal(coverage.latestAsOf, "2026-08-31T16:00:00Z");
+
+  const positions = buildFinancePortfolioPositions(
+    [
+      { id: 10, name: "Fund", investment_type: "fund", status: "active", currency: "THB", quantity: 10, cost_basis: 500, current_value: null },
+      { id: 11, name: "Stock", investment_type: "stock", status: "active", currency: "THB", quantity: 1, cost_basis: 90, current_value: null },
+    ] as Parameters<typeof buildFinancePortfolioPositions>[0],
+    rows,
+  );
+  assert.deepEqual(positions.map((item) => item.currentValue), [650, 100]);
 });

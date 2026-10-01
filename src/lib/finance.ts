@@ -279,11 +279,118 @@ export function resolveReportingPeriod(value?: string): string {
   return requested && isReportingPeriod(requested) ? requested : configuredPeriod();
 }
 
+/**
+ * Field kinds checked at the API boundary. `?` means the field may also be
+ * null or missing. Numbers must be finite. Extra fields are allowed so the API
+ * can add data without breaking this reader.
+ */
+type FieldKind = "string" | "number" | "boolean" | "string?" | "number?";
+type Shape = Record<string, FieldKind>;
+
+const INVALID_PAYLOAD = "Finance API returned an invalid payload shape";
+
+function matchesKind(value: unknown, kind: FieldKind): boolean {
+  if (kind.endsWith("?") && (value === null || value === undefined)) return true;
+  const base = kind.replace("?", "");
+  if (base === "number") return typeof value === "number" && Number.isFinite(value);
+  return typeof value === base;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** True when `value` is an object whose listed fields have the expected kinds. */
+export function matchesShape(value: unknown, shape: Shape): boolean {
+  return isRecord(value) && Object.entries(shape).every(([field, kind]) => matchesKind(value[field], kind));
+}
+
+function assertRows(rows: unknown, shape: Shape): void {
+  if (!Array.isArray(rows) || !rows.every((row) => matchesShape(row, shape))) throw new Error(INVALID_PAYLOAD);
+}
+
+const TRANSACTION_SHAPE: Shape = {
+  id: "number",
+  transaction_type: "string",
+  amount: "number",
+  currency: "string",
+  transaction_date: "string",
+  description: "string?",
+  category: "string?",
+  merchant: "string?",
+};
+const ACCOUNT_SHAPE: Shape = { id: "number", name: "string", account_type: "string?", currency: "string", status: "string" };
+const INVESTMENT_SHAPE: Shape = {
+  id: "number",
+  name: "string",
+  investment_type: "string",
+  quantity: "number?",
+  cost_basis: "number?",
+  current_value: "number?",
+  currency: "string",
+  status: "string",
+};
+const RECONCILIATION_SHAPE: Shape = {
+  id: "number",
+  period_start: "string",
+  period_end: "string",
+  source_type: "string",
+  difference_amount: "number?",
+  currency: "string",
+  status: "string",
+};
+const VALUATION_SHAPE: Shape = {
+  id: "number",
+  investment_id: "number",
+  market_value: "number?",
+  currency: "string",
+  valuation_as_of: "string",
+  coverage_status: "string",
+  market_price_quality: "string?",
+};
+const INVOICE_SHAPE: Shape = {
+  id: "number",
+  invoice_no: "string?",
+  amount: "number",
+  currency: "string",
+  issue_date: "string",
+  due_date: "string?",
+  status: "string",
+};
+
+/** Throw unless the summary has every section the dashboard aggregates. */
+export function assertFinanceSummary(payload: unknown): asserts payload is FinanceSummary {
+  if (!isRecord(payload) || !matchesShape(payload.accounts, { active: "number" })) throw new Error(INVALID_PAYLOAD);
+  assertRows(payload.transactions, { currency: "string", count: "number", income: "number", expense: "number", net: "number" });
+  assertRows(payload.revenue, { currency: "string", count: "number", total: "number", received: "number", pending: "number" });
+  assertRows(payload.invoices, { status: "string", currency: "string", count: "number", amount: "number" });
+  assertRows(payload.liabilities, { currency: "string", count: "number", outstanding: "number" });
+}
+
+/** Throw unless the risk-readiness payload has the fields the dashboard renders. */
+export function assertFinanceRiskReadiness(payload: unknown): asserts payload is FinanceRiskReadiness {
+  const valid =
+    matchesShape(payload, {
+      status: "string",
+      currency: "string",
+      total_positions: "number",
+      eligible_positions: "number",
+      coverage_ratio: "number",
+      metric_definitions_status: "string",
+      fx_contract_status: "string",
+    }) &&
+    isRecord(payload) &&
+    (payload.status === "ready" || payload.status === "blocked") &&
+    Array.isArray(payload.reason_codes) &&
+    payload.reason_codes.every((code) => typeof code === "string");
+  if (!valid) throw new Error(INVALID_PAYLOAD);
+}
+
 function apiBaseUrl(): string {
   return (process.env.FINANCE_API_BASE_URL || "http://127.0.0.1:3001").replace(/\/$/, "");
 }
 
-async function fetchFinanceEndpoint<T>(path: string): Promise<ApiResult<T>> {
+async function fetchFinanceEndpoint<T>(path: string, validate?: (payload: unknown) => void): Promise<ApiResult<T>> {
   const token = process.env.FINANCE_API_TOKEN?.trim();
   if (!token) throw new Error("FINANCE_API_TOKEN is not configured");
 
@@ -302,6 +409,8 @@ async function fetchFinanceEndpoint<T>(path: string): Promise<ApiResult<T>> {
     throw new Error("BookFinance API returned an unsupported schema");
   }
 
+  validate?.(payload);
+
   const requestId = response.headers.get("X-Request-ID");
   return { data: payload as T, requestIds: requestId ? [requestId] : [] };
 }
@@ -315,13 +424,20 @@ function pagedPath(path: string, limit: number, offset: number): string {
   return `${path}${separator}${query.toString()}`;
 }
 
-async function fetchAllFinancePages<T>(path: string, limit: number): Promise<ApiResult<T[]>> {
+async function fetchFinancePage<T>(path: string, shape: Shape): Promise<ApiResult<PagedFinanceResponse<T>>> {
+  return fetchFinanceEndpoint<PagedFinanceResponse<T>>(path, (payload) => {
+    if (!isRecord(payload)) throw new Error(INVALID_PAYLOAD);
+    assertRows(payload.items, shape);
+  });
+}
+
+async function fetchAllFinancePages<T>(path: string, limit: number, shape: Shape): Promise<ApiResult<T[]>> {
   const items: T[] = [];
   const requestIds: string[] = [];
   let offset = 0;
 
   for (let page = 0; page < MAX_FINANCE_PAGES; page += 1) {
-    const result = await fetchFinanceEndpoint<PagedFinanceResponse<T>>(pagedPath(path, limit, offset));
+    const result = await fetchFinancePage<T>(pagedPath(path, limit, offset), shape);
     const response = result.data;
     requestIds.push(...result.requestIds);
 
@@ -355,14 +471,14 @@ export async function loadFinanceDashboard(requestedPeriod?: string): Promise<Fi
   const period = resolveReportingPeriod(requestedPeriod);
 
   const [summaryResult, transactionsResult, accountsResult, investmentsResult, reconciliationsResult, valuationsResult, riskReadinessResult, invoicesResult] = await Promise.allSettled([
-    fetchFinanceEndpoint<FinanceSummary>(`/api/finance/v1/summary?period=${period}`),
-    fetchFinanceEndpoint<PagedFinanceResponse<FinanceTransaction>>("/api/finance/v1/transactions?limit=8"),
-    fetchFinanceEndpoint<PagedFinanceResponse<FinanceAccount>>("/api/finance/v1/accounts?status=active&limit=8"),
-    fetchAllFinancePages<FinanceInvestment>("/api/finance/v1/investments?status=active", FINANCE_PORTFOLIO_PAGE_SIZE),
-    fetchFinanceEndpoint<PagedFinanceResponse<FinanceReconciliation>>("/api/finance/v1/reconciliations?limit=8"),
-    fetchAllFinancePages<FinanceValuation>("/api/finance/v1/valuations?status=active&latest=true", FINANCE_PORTFOLIO_PAGE_SIZE),
-    fetchFinanceEndpoint<FinanceRiskReadiness>("/api/finance/v1/risk-readiness"),
-    fetchFinanceEndpoint<PagedFinanceResponse<FinanceInvoice>>("/api/finance/v1/invoices?limit=6"),
+    fetchFinanceEndpoint<FinanceSummary>(`/api/finance/v1/summary?period=${period}`, assertFinanceSummary),
+    fetchFinancePage<FinanceTransaction>("/api/finance/v1/transactions?limit=8", TRANSACTION_SHAPE),
+    fetchFinancePage<FinanceAccount>("/api/finance/v1/accounts?status=active&limit=8", ACCOUNT_SHAPE),
+    fetchAllFinancePages<FinanceInvestment>("/api/finance/v1/investments?status=active", FINANCE_PORTFOLIO_PAGE_SIZE, INVESTMENT_SHAPE),
+    fetchFinancePage<FinanceReconciliation>("/api/finance/v1/reconciliations?limit=8", RECONCILIATION_SHAPE),
+    fetchAllFinancePages<FinanceValuation>("/api/finance/v1/valuations?status=active&latest=true", FINANCE_PORTFOLIO_PAGE_SIZE, VALUATION_SHAPE),
+    fetchFinanceEndpoint<FinanceRiskReadiness>("/api/finance/v1/risk-readiness", assertFinanceRiskReadiness),
+    fetchFinancePage<FinanceInvoice>("/api/finance/v1/invoices?limit=6", INVOICE_SHAPE),
   ]);
 
   const endpointStatuses: FinanceEndpointStatusMap = {
@@ -409,6 +525,9 @@ function dashboardErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.includes("unsupported schema")) {
     return "Finance API ส่ง schema ที่ frontend เวอร์ชันนี้ยังไม่รองรับ";
   }
+  if (error instanceof Error && error.message === INVALID_PAYLOAD) {
+    return "Finance API ส่งข้อมูลที่รูปแบบไม่ตรงกับ contract จึงไม่แสดงส่วนนี้";
+  }
   if (error instanceof Error && error.message.includes("pagination")) {
     return "Finance API ส่งข้อมูลหน้าไม่ครบหรือ cursor ผิดรูปแบบ";
   }
@@ -418,16 +537,47 @@ function dashboardErrorMessage(error: unknown): string {
   return "ยังไม่สามารถโหลดข้อมูลจาก Finance API ได้ กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่";
 }
 
-export function formatMoney(value: number, currency: string): string {
-  const amount = Number(value) || 0;
+/** Minor-unit digits for an ISO 4217 currency (THB/USD 2, JPY 0). */
+export function currencyScale(currency: string): number {
+  try {
+    return new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2;
+  } catch {
+    return 2;
+  }
+}
+
+/**
+ * Sum API amounts in integer minor units so totals do not accumulate binary
+ * floating-point drift (0.1 + 0.2 !== 0.3). Each value is rounded to the
+ * currency's minor unit before it is added.
+ */
+export function sumMoney(values: Iterable<number | null | undefined>, currency: string): number {
+  const factor = 10 ** currencyScale(currency || "THB");
+  let minorUnits = 0;
+  for (const value of values) minorUnits += Math.round((Number(value) || 0) * factor);
+  return minorUnits / factor;
+}
+
+export type FormatMoneyOptions = {
+  /** Show the currency's full minor-unit precision instead of whole units. */
+  precise?: boolean;
+};
+
+export function formatMoney(value: number, currency: string, options: FormatMoneyOptions = {}): string {
+  const code = currency || "THB";
+  const digits = options.precise ? currencyScale(code) : 0;
+  const raw = Number(value) || 0;
+  // Values that round to zero at the displayed precision must not render as "-฿0".
+  const amount = Math.abs(raw) < 0.5 / 10 ** digits ? 0 : raw;
   try {
     return new Intl.NumberFormat("th-TH", {
       style: "currency",
-      currency: currency || "THB",
-      maximumFractionDigits: 0,
+      currency: code,
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
     }).format(amount);
   } catch {
-    return `${currency || "THB"} ${amount.toLocaleString("th-TH", { maximumFractionDigits: 0 })}`;
+    return `${code} ${amount.toLocaleString("th-TH", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
   }
 }
 
@@ -482,9 +632,26 @@ export function summarizeFinanceSignals(summary: FinanceSummary): FinanceControl
     revenuePending: Number(revenue?.pending) || 0,
     liabilityOutstanding: Number(liabilities?.outstanding) || 0,
     liabilityCount: Number(liabilities?.count) || 0,
-    openInvoiceAmount: openInvoices.reduce((total, row) => total + (Number(row.amount) || 0), 0),
+    openInvoiceAmount: sumMoney(openInvoices.map((row) => row.amount), currency),
     openInvoiceCount: openInvoices.reduce((total, row) => total + (Number(row.count) || 0), 0),
   };
+}
+
+/**
+ * Whether `candidate` supersedes `previous` for the same position: a later
+ * `valuation_as_of` instant wins (compared as instants, so `...Z` and
+ * `...+07:00` stamps order correctly), and a tie goes to the higher id, the
+ * later correction. Every "latest valuation" view must use this one rule.
+ */
+function isNewerValuation(candidate: FinanceValuation, previous: FinanceValuation): boolean {
+  const candidateMs = Date.parse(candidate.valuation_as_of);
+  const previousMs = Date.parse(previous.valuation_as_of);
+  if (!Number.isNaN(candidateMs) && !Number.isNaN(previousMs)) {
+    if (candidateMs !== previousMs) return candidateMs > previousMs;
+  } else if (candidate.valuation_as_of !== previous.valuation_as_of) {
+    return candidate.valuation_as_of > previous.valuation_as_of;
+  }
+  return candidate.id > previous.id;
 }
 
 function latestValuationsByInvestment(valuations: FinanceValuation[]): Map<string, FinanceValuation> {
@@ -492,11 +659,7 @@ function latestValuationsByInvestment(valuations: FinanceValuation[]): Map<strin
   for (const valuation of valuations) {
     const key = `${valuation.investment_id}:${valuation.currency}`;
     const previous = latest.get(key);
-    if (
-      !previous ||
-      valuation.valuation_as_of > previous.valuation_as_of ||
-      (valuation.valuation_as_of === previous.valuation_as_of && valuation.id > previous.id)
-    ) {
+    if (!previous || isNewerValuation(valuation, previous)) {
       latest.set(key, valuation);
     }
   }
@@ -545,12 +708,12 @@ export function summarizeFinancePortfolio(
   const complete = positions.length > 0 && positions.every(
     (item) => item.currentValue !== null && item.costBasis !== null,
   );
-  const allocations = new Map<string, { count: number; currentValue: number }>();
+  const allocations = new Map<string, { count: number; values: Array<number | null> }>();
 
   for (const item of positions) {
-    const current = allocations.get(item.investmentType) || { count: 0, currentValue: 0 };
+    const current = allocations.get(item.investmentType) || { count: 0, values: [] };
     current.count += 1;
-    current.currentValue += Number(item.currentValue) || 0;
+    current.values.push(item.currentValue);
     allocations.set(item.investmentType, current);
   }
 
@@ -559,13 +722,13 @@ export function summarizeFinancePortfolio(
     activePositions: positions.length,
     pricedPositions: priced.length,
     unpricedPositions: positions.length - priced.length,
-    costBasis: positions.reduce((total, item) => total + (Number(item.costBasis) || 0), 0),
-    currentValue: priced.reduce((total, item) => total + (Number(item.currentValue) || 0), 0),
+    costBasis: sumMoney(positions.map((item) => item.costBasis), currency),
+    currentValue: sumMoney(priced.map((item) => item.currentValue), currency),
     unrealizedGainLoss: complete
-      ? positions.reduce((total, item) => total + (Number(item.currentValue) || 0) - (Number(item.costBasis) || 0), 0)
+      ? sumMoney(positions.flatMap((item) => [item.currentValue, -(Number(item.costBasis) || 0)]), currency)
       : null,
     allocations: [...allocations.entries()]
-      .map(([investmentType, values]) => ({ investmentType, ...values }))
+      .map(([investmentType, { count, values }]) => ({ investmentType, count, currentValue: sumMoney(values, currency) }))
       .sort((left, right) => right.currentValue - left.currentValue),
   };
 }
@@ -581,10 +744,7 @@ export function summarizeFinanceReconciliations(rows: FinanceReconciliation[]): 
     openCount: open.length,
     exceptionCount: exceptions.length,
     matchedCount: selected.filter((row) => row.status.toLowerCase() === "matched").length,
-    unresolvedDifference: [...open, ...exceptions].reduce(
-      (total, row) => total + (Number(row.difference_amount) || 0),
-      0,
-    ),
+    unresolvedDifference: sumMoney([...open, ...exceptions].map((row) => row.difference_amount), currency),
   };
 }
 
@@ -595,7 +755,7 @@ export function summarizeFinanceValuationCoverage(rows: FinanceValuation[], curr
 
   for (const row of selected) {
     const previous = latestByInvestment.get(row.investment_id);
-    if (!previous || row.valuation_as_of > previous.valuation_as_of) latestByInvestment.set(row.investment_id, row);
+    if (!previous || isNewerValuation(row, previous)) latestByInvestment.set(row.investment_id, row);
   }
 
   const latest = [...latestByInvestment.values()];
@@ -606,10 +766,10 @@ export function summarizeFinanceValuationCoverage(rows: FinanceValuation[], curr
     verifiedPositions: latest.filter((row) => row.market_price_quality === "verified").length,
     stalePositions: latest.filter((row) => row.coverage_status === "stale" || row.market_price_quality === "stale").length,
     unpricedPositions: latest.filter((row) => row.coverage_status === "unpriced" || row.market_value === null).length,
-    latestAsOf: latest.reduce<string | null>(
-      (latestValue, row) => (!latestValue || row.valuation_as_of > latestValue ? row.valuation_as_of : latestValue),
+    latestAsOf: latest.reduce<FinanceValuation | null>(
+      (newest, row) => (!newest || isNewerValuation(row, newest) ? row : newest),
       null,
-    ),
+    )?.valuation_as_of ?? null,
   };
 }
 

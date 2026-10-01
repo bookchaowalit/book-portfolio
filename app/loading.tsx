@@ -1,9 +1,9 @@
 export default function Loading() {
   return (
-    <main className="shell loading-shell" aria-busy="true" aria-label="กำลังโหลด Finance Command Center">
+    <main id="main" tabIndex={-1} className="shell loading-shell" aria-busy="true" aria-label="กำลังโหลด Finance Command Center">
       <header className="topbar">
         <div className="brand-lockup">
-          <span className="brand-mark">BP</span>
+          <span className="brand-mark" aria-hidden="true">BP</span>
           <div>
             <p className="eyebrow">PRIVATE WEALTH DESK</p>
             <p className="brand-name">BookPortfolio</p>
