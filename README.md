@@ -121,4 +121,4 @@ load test before production promotion.
 ## Boundary status
 
 This is an application boundary created under the Solo Empire Book Dev mount,
-hosted at `github.com/bookchaowalit/finance-portfolio-web`. It has not been deployed.
+hosted at `github.com/bookchaowalit/book-portfolio`. It has not been deployed.
